@@ -1,52 +1,50 @@
-# `csl mcp` — MCP stdio server reference
+# MCP reference
 
-`csl mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) stdio server bundled into the `csl` binary. It exposes the same search, repo-lookup, and file-read functionality that the cobra subcommands use, but as native MCP tools that Claude Code (and other MCP clients) can call without the user having to build shell strings or approve individual `Bash()` invocations.
+`csl mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) stdio server bundled into the `csl` binary. It exposes the same search, repo, and file-read functionality as the cobra subcommands, but as typed MCP tools that Claude Code (and other MCP clients) can call directly.
 
-There is no long-running server. The MCP client spawns `csl mcp` as a subprocess per session, pipes JSON-RPC 2.0 over stdin/stdout, and the process exits when stdin closes. See the [blog post](https://dropbrain.studio/blog/mcp-stdio-tools-not-services/) for the "tools, not services" background.
+There is no persistent server. The MCP client spawns `csl mcp` as a subprocess per session, pipes JSON-RPC 2.0 over stdin/stdout, and the process exits when stdin closes.
 
-## Architecture
+## Register
 
-```
-┌──────────────┐  spawn         ┌───────────┐  unix socket   ┌──────────────┐
-│ Claude Code  │ ─────────────▶ │  csl mcp  │ ─────────────▶ │  csl daemon  │
-│  (client)    │ ◀──JSON-RPC─── │  (stdio)  │ ◀──gRPC─────── │   (zoekt)    │
-└──────────────┘                └───────────┘                └──────────────┘
-```
-
-- `csl mcp` is a thin adapter over the internal Go packages that already back the cobra commands (`internal/search`, `internal/daemon`, `internal/repo/finder`, `internal/repo/config`).
-- `csl_search` and `csl_count` follow the same daemon-first-then-fallback pattern as the CLI: they call `daemon.EnsureDaemon`, then `daemon.SearchVia` / `daemon.CountVia`, and fall back to in-process search if the daemon is unreachable. The daemon keeps zoekt shards mmap'd across calls, so each tool invocation is fast after the first.
-- `csl_repo_lookup`, `csl_repo_info`, and `csl_read` hit the filesystem directly via `finder.Walk` and do not talk to the daemon. `csl_repo_info` additionally reads the zoekt index state to compute staleness.
-- `csl_repo_pull` shells out to `git pull --ff-only` in the resolved repo path with dirty-tree and detached-HEAD safety checks.
-- `csl_repo_reindex` writes new shards to the zoekt index directory directly (`search.IndexRepo`); the running daemon re-mmap's the updated shards on the next query.
-
-## Registration
-
-```bash
+```sh
 claude mcp add --scope user csl -- csl mcp
-```
-
-This writes a user-scoped entry into Claude Code's config so the `csl_*` tools are available in every new session on the current machine. To sync registration across machines, use the `claude-mcp` recipe in [mad01/dotfiles](https://github.com/mad01/dotfiles) which reconciles `servers.json` against `claude mcp list`.
-
-Verify after registering:
-
-```bash
 claude mcp list
-# expect: csl: csl mcp - ✓ Connected
 ```
+
+Expected:
+
+```
+csl: csl mcp - ✓ Connected
+```
+
+The registration stores the command name (not an absolute path), so `csl` must be on the `PATH` of whatever process launches Claude Code.
 
 ## Tools
 
+Eight tools are registered, grouped into three areas: `csl_repo_*` for repo management, `csl_search` / `csl_count` / `csl_query_validate` for search, and `csl_read` for file reads.
+
+| Tool | Purpose |
+|---|---|
+| [`csl_repo_lookup`](#csl_repo_lookup) | Resolve a repo name to its local checkout path |
+| [`csl_repo_info`](#csl_repo_info) | Git and index health for a repo, plus a suggested action |
+| [`csl_repo_pull`](#csl_repo_pull) | `git pull --ff-only` with safety checks |
+| [`csl_repo_reindex`](#csl_repo_reindex) | Rebuild the zoekt index for a single repo |
+| [`csl_search`](#csl_search) | Search code across locally checked-out repos |
+| [`csl_count`](#csl_count) | Count matches, optionally grouped by repo or language |
+| [`csl_read`](#csl_read) | Read a file from a named local repo |
+| [`csl_query_validate`](#csl_query_validate) | Validate a zoekt query and return its parsed tree |
+
 ### `csl_repo_lookup`
 
-Resolve a git repo name to its absolute local checkout path.
+Resolve a repo name to its absolute local checkout path.
 
-**When Claude uses it:** the user mentions a repo by name and Claude needs its absolute path before `cd`-ing, reading, or grepping inside it.
+**When to call:** the user mentions a repo by name and you need its path before `cd`-ing, reading, or grepping inside it.
 
 **Input:**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Case-insensitive regex or substring matched against the `org/repo` name (e.g. `tboi`, `mad01/.*`) |
+| `name` | string | yes | Case-insensitive regex or substring matched against `org/repo` (e.g. `tboi`, `mad01/.*`) |
 
 **Output:**
 
@@ -55,24 +53,33 @@ Resolve a git repo name to its absolute local checkout path.
 | `matches` | array | Matching repos; empty if no local checkout was found |
 | `matches[].name` | string | `org/repo` name extracted from the git remote URL |
 | `matches[].path` | string | Absolute filesystem path to the repo root |
+| `matches[].remote` | string | Full origin remote URL (e.g. `git@github.com:mad01/csl.git`) |
+| `matches[].host` | string | Hostname extracted from the remote URL (e.g. `github.com`) |
 
 **Example:**
 
 ```json
 // request
-{"name": "tboi"}
+{"name": "code-search-local"}
 
 // response
-{"matches": [{"name": "mad01/tboi", "path": "/Users/alex/code/src/github.com/mad01/tboi"}]}
+{
+  "matches": [{
+    "name": "mad01/code-search-local",
+    "path": "/Users/alex/code/src/github.com/mad01/code-search-local",
+    "remote": "git@github.com:mad01/code-search-local.git",
+    "host": "github.com"
+  }]
+}
 ```
 
-Empty `matches` means the repo is not checked out locally. Claude is instructed to report that to the user rather than guess a path.
+An empty `matches` means the repo is not checked out under any configured `dirs`. Report that to the user rather than guessing a path.
 
 ### `csl_repo_info`
 
-Report git state and zoekt index state for a repo, plus a suggested next action.
+Report git state and index state for a repo, plus a suggested next action.
 
-**When Claude uses it:** before creating a branch, running `git pull`, or making edits, to confirm the working tree is clean and the search index is fresh. Also used to decide whether `csl_repo_pull` or `csl_repo_reindex` should run first.
+**When to call:** before creating a branch, running `git pull`, or making edits, to confirm the working tree is clean and the index is fresh.
 
 **Input:**
 
@@ -84,16 +91,25 @@ Report git state and zoekt index state for a repo, plus a suggested next action.
 
 | Field | Type | Description |
 |---|---|---|
-| `matches` | array | Matching repos, each with git + index state |
+| `matches` | array | Matching repos, each with git and index state |
 | `matches[].name` | string | `org/repo` name |
 | `matches[].path` | string | Absolute filesystem path |
+| `matches[].remote` | string | Origin remote URL |
+| `matches[].host` | string | Git host |
 | `matches[].branch` | string | Current git branch (or `HEAD` if detached) |
-| `matches[].dirty` | bool | Whether the working tree has uncommitted changes |
+| `matches[].dirty` | bool | Working tree has uncommitted changes |
 | `matches[].modified_files` | int | Count of modified tracked files |
 | `matches[].untracked_files` | int | Count of untracked files |
-| `matches[].index_stale` | bool | Whether the zoekt index is behind the current fingerprint |
-| `matches[].indexed_at` | string | RFC3339 timestamp or the literal string `never` |
+| `matches[].index_stale` | bool | Zoekt index is behind the current fingerprint |
+| `matches[].indexed_at` | string | RFC3339 timestamp, or the literal string `never` |
 | `matches[].action` | string | One of `ready`, `commit_or_stash`, `pull_recommended`, `needs_reindex` |
+
+The `action` field encodes the decision tree:
+
+- `commit_or_stash` — the working tree is dirty.
+- `needs_reindex` — never indexed, or index fingerprint does not match current.
+- `pull_recommended` — indexed more than 30 minutes ago; likely behind remote.
+- `ready` — everything else.
 
 **Example:**
 
@@ -113,20 +129,18 @@ Report git state and zoekt index state for a repo, plus a suggested next action.
 }
 ```
 
-The `action` field is how Claude decides what to do next: `commit_or_stash` dirty trees, `needs_reindex` when the index is behind, `pull_recommended` when the last index is older than 30 minutes (likely behind remote), and `ready` otherwise.
-
 ### `csl_repo_pull`
 
-Run `git pull --ff-only` in a named repo with safety checks.
+Run `git pull --ff-only` in a named repo, with safety checks for dirty trees and detached HEAD.
 
-**When Claude uses it:** before creating a branch on a repo that may be behind. Refuses by default if the working tree is dirty or HEAD is detached; set `force: true` to override.
+**When to call:** before creating a branch on a repo that may be behind.
 
 **Input:**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Case-insensitive substring match against the repo name |
-| `force` | bool | no | Pull even if uncommitted changes exist |
+| `force` | bool | no | Pull even if the working tree is dirty or HEAD is detached |
 
 **Output:**
 
@@ -136,11 +150,11 @@ Run `git pull --ff-only` in a named repo with safety checks.
 | `path` | string | Absolute filesystem path |
 | `branch` | string | Current branch |
 | `updated` | bool | `true` if HEAD moved after the pull |
-| `warning` | string | Set when the safety check blocked the pull (dirty tree, detached HEAD) |
+| `warning` | string | Set when a safety check blocked the pull |
 | `old_head` | string | HEAD before the pull |
 | `new_head` | string | HEAD after the pull |
 
-**Example (successful fast-forward):**
+**Successful fast-forward:**
 
 ```json
 {
@@ -153,7 +167,7 @@ Run `git pull --ff-only` in a named repo with safety checks.
 }
 ```
 
-**Example (blocked by dirty tree):**
+**Blocked by dirty tree:**
 
 ```json
 {
@@ -165,13 +179,13 @@ Run `git pull --ff-only` in a named repo with safety checks.
 }
 ```
 
-The pull uses `--ff-only`, so no merge commits are created. If a real merge would be needed, the underlying git command fails and the error is surfaced to Claude.
+The pull is always `--ff-only`. If a real merge would be needed, the underlying `git` command fails and the error surfaces to the client.
 
 ### `csl_repo_reindex`
 
 Rebuild the zoekt index for a single repo.
 
-**When Claude uses it:** after a significant edit, merge, or checkout, when `csl_repo_info` reports `action: needs_reindex`, or when fresh search results are needed before the background re-indexer would catch up.
+**When to call:** after a significant edit or checkout, when `csl_repo_info` reports `action: needs_reindex`, or when fresh results are needed sooner than the background re-indexer would catch up.
 
 **Input:**
 
@@ -199,28 +213,28 @@ Rebuild the zoekt index for a single repo.
 }
 ```
 
-This touches only the named repo's shards; other repos in the index are untouched.
+Only the named repo's shards are touched. Other repos in the index are untouched. State is updated with the new fingerprint and timestamp.
 
 ### `csl_search`
 
 Search code across locally checked-out repos using zoekt query syntax.
 
-**When Claude uses it:** "where is X defined", "find all Y", "does any of my projects use Z", "show me every TODO in the Go code".
+**When to call:** "where is X defined", "find all Y", "does any of my projects use Z", "show me every TODO in the Go code".
 
 **Input:**
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `query` | string | — | Zoekt query (see syntax below) |
-| `repo` | string | — | Restrict to repo names matching this regex |
-| `lang` | string | — | Restrict to files of this language (e.g. `go`, `swift`, `python`) |
-| `file` | string | — | Restrict to file paths matching this regex (e.g. `\.go$`) |
-| `output_mode` | string | `files_with_matches` | `files_with_matches` returns unique file paths; `content` returns matching lines |
-| `context_lines` | int | `0` | Context lines around each match; content mode only |
+| `query` | string | — | Zoekt query |
+| `repo` | string | `""` | Restrict to repo names matching this regex |
+| `lang` | string | `""` | Restrict to files of this language |
+| `file` | string | `""` | Restrict to file paths matching this regex |
+| `output_mode` | string | `files_with_matches` | `files_with_matches` or `content` |
+| `context_lines` | int | `0` | Context lines per match. Only applies to `content` mode |
 | `limit` | int | `50` | Maximum number of file results |
 | `case_sensitive` | bool | `false` | Force case-sensitive matching; default is smart case |
 
-**Output (files_with_matches mode):**
+**Output (`files_with_matches`):**
 
 ```json
 {
@@ -232,7 +246,7 @@ Search code across locally checked-out repos using zoekt query syntax.
 }
 ```
 
-**Output (content mode):**
+**Output (`content`):**
 
 ```json
 {
@@ -252,7 +266,7 @@ Search code across locally checked-out repos using zoekt query syntax.
 }
 ```
 
-**Query syntax (zoekt):**
+**Query syntax:**
 
 | Syntax | Meaning |
 |---|---|
@@ -266,20 +280,20 @@ Search code across locally checked-out repos using zoekt query syntax.
 | `repo:kitty` | Repo name regex |
 | `case:yes` | Case-sensitive match |
 
-Run `csl search --help` or use `csl_query_validate` to experiment with complex queries.
+Use [`csl_query_validate`](#csl_query_validate) to debug complex queries.
 
 ### `csl_count`
 
-Count matches of a zoekt query across repos, optionally grouped by repo or language.
+Count matches across locally checked-out repos, optionally grouped.
 
-**When Claude uses it:** cross-repo tallies like "how many TODOs across my Go projects" or "which language has the most calls to `fmt.Errorf`".
+**When to call:** cross-repo tallies like "how many TODOs across my Go projects" or "which language has the most calls to `fmt.Errorf`".
 
 **Input:**
 
 | Field | Type | Description |
 |---|---|---|
 | `query` | string | Zoekt query (same syntax as `csl_search`) |
-| `repo` | string | Restrict to repo names matching this regex |
+| `repo` | string | Restrict to repos matching this regex |
 | `lang` | string | Restrict to files of this language |
 | `group_by` | string | `repo`, `language`, or empty for a single total |
 
@@ -290,7 +304,7 @@ Count matches of a zoekt query across repos, optionally grouped by repo or langu
   "total": 142,
   "groups": [
     {"group": "mad01/code-search-local", "count": 87},
-    {"group": "mad01/dropbrain-studio", "count": 55}
+    {"group": "myorg/service-a", "count": 55}
   ]
 }
 ```
@@ -301,7 +315,7 @@ Count matches of a zoekt query across repos, optionally grouped by repo or langu
 
 Read a file from a named local repo by repo name and relative path.
 
-**When Claude uses it:** Claude already knows which repo holds a file and wants a specific line range without first resolving the absolute path via `csl_repo_lookup`.
+**When to call:** you already know which repo holds a file and want a specific line range without first resolving the absolute path via `csl_repo_lookup`.
 
 **Input:**
 
@@ -309,8 +323,8 @@ Read a file from a named local repo by repo name and relative path.
 |---|---|---|---|
 | `repo` | string | yes | Substring match against the `org/repo` name |
 | `file` | string | yes | File path relative to the repo root |
-| `start_line` | int | no | First line to return, 1-based; 0 or omit for start of file |
-| `end_line` | int | no | Last line to return, 1-based inclusive; 0 or omit for end of file |
+| `start_line` | int | no | First line to return, 1-based; `0` or omit for start of file |
+| `end_line` | int | no | Last line to return, 1-based inclusive; `0` or omit for end of file |
 
 **Output:**
 
@@ -324,11 +338,13 @@ Read a file from a named local repo by repo name and relative path.
 }
 ```
 
+The line scanner buffers up to 1 MB per line, so files with very long minified lines still read cleanly.
+
 ### `csl_query_validate`
 
-Validate a zoekt query and return its parsed tree or a parse error with a fixing hint.
+Validate a zoekt query and return its parsed tree, or a parse error with a fixing hint.
 
-**When Claude uses it:** to debug a complex query before invoking `csl_search`, especially when escaped regex metacharacters are involved.
+**When to call:** to debug a complex query before invoking `csl_search`, especially when regex metacharacters are involved.
 
 **Input:**
 
@@ -336,7 +352,7 @@ Validate a zoekt query and return its parsed tree or a parse error with a fixing
 |---|---|---|
 | `query` | string | The zoekt query string to validate |
 
-**Output:**
+**Output (valid):**
 
 ```json
 {
@@ -345,7 +361,7 @@ Validate a zoekt query and return its parsed tree or a parse error with a fixing
 }
 ```
 
-On parse errors:
+**Output (invalid):**
 
 ```json
 {
@@ -355,30 +371,16 @@ On parse errors:
 }
 ```
 
-## Smoke test
-
-To verify `csl mcp` speaks JSON-RPC correctly without involving Claude Code:
-
-```bash
-( printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'; sleep 1 ) | csl mcp
-```
-
-Expected: one `initialize` response followed by a `tools/list` response listing the eight `csl_*` tools with their input and output schemas. The `sleep 1` keeps stdin open long enough for the server to flush responses before exit.
-
 ## Troubleshooting
 
 **`claude mcp list` shows `csl: csl mcp - ✗ Failed to connect`**
-- Check that `csl` is on `PATH` for the Claude Code process (`which csl`). The registration stores the command name, not an absolute path, so a shell-local `PATH` will not work.
-- Run the smoke test above. If it exits non-zero, the binary itself is broken — rebuild with `make install`.
+Run `which csl` in the same shell that launched Claude Code. If the binary is not on `PATH`, either fix `PATH` or pass an absolute path: `claude mcp add --scope user csl -- /Users/you/code/bin/csl mcp`.
 
-**First `csl_search` call takes tens of seconds**
-- The first search in a session triggers zoekt indexing of every configured repo. Subsequent calls reuse the daemon's in-memory shards and return in hundreds of milliseconds.
-- To pre-warm manually: run `csl search foo` in a terminal before opening Claude Code.
+**First `csl_search` takes tens of seconds**
+The first call after a clean install triggers an initial zoekt index build. Subsequent calls reuse the daemon's mmap'd shards and return in hundreds of milliseconds. Pre-warm with `csl search foo` from a terminal before starting Claude Code.
 
 **`csl_search` returns empty for a query that should match**
-- Verify the indexed repos match your expectation: `csl doctor` shows the index state and the configured directories.
-- Rebuild the index: `csl index` (or `csl index --force`).
-- Test the query directly against the daemon: `csl search "<query>"` on the command line.
+Run `csl doctor` and check the index state. If a repo is missing or stale, run `csl index --all` or call [`csl_repo_reindex`](#csl_repo_reindex) for the specific repo. Validate the query with [`csl_query_validate`](#csl_query_validate) to rule out a syntax error.
 
-**`csl_repo_lookup` returns empty matches**
-- The repo is not checked out under any of the directories listed in `~/.config/csl/config.yaml` `dirs`. Either clone it there or add the parent directory to `dirs`.
+**`csl_repo_lookup` returns empty for a repo that exists**
+The checkout is not under any directory listed in `~/.config/csl/config.yaml` `dirs`. Either clone it there or add the parent directory.
