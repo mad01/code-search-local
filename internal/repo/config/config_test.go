@@ -1,0 +1,270 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadFrom(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\n  - /tmp/other\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Dirs) != 2 {
+		t.Fatalf("expected 2 dirs, got %d", len(cfg.Dirs))
+	}
+	if cfg.Dirs[0] != "/tmp/repos" {
+		t.Errorf("expected /tmp/repos, got %s", cfg.Dirs[0])
+	}
+	if cfg.Dirs[1] != "/tmp/other" {
+		t.Errorf("expected /tmp/other, got %s", cfg.Dirs[1])
+	}
+}
+
+func TestLoadFromTildeExpansion(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - ~/code/repos\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, _ := os.UserHomeDir()
+	expected := filepath.Join(home, "code/repos")
+	if cfg.Dirs[0] != expected {
+		t.Errorf("expected %s, got %s", expected, cfg.Dirs[0])
+	}
+}
+
+func TestLoadFromMissingFile(t *testing.T) {
+	_, err := LoadFrom("/nonexistent/config.yaml")
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+func TestLoadFromInvalidYAML(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("not: [valid: yaml: {{{\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFrom(cfgPath)
+	if err == nil {
+		t.Error("expected error for invalid YAML")
+	}
+}
+
+func TestEffectiveLayoutDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.EffectiveLayout(); got != LayoutSplit {
+		t.Errorf("expected %q, got %q", LayoutSplit, got)
+	}
+}
+
+func TestEffectiveLayoutTab(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\nlayout: tab\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.EffectiveLayout(); got != LayoutTab {
+		t.Errorf("expected %q, got %q", LayoutTab, got)
+	}
+}
+
+func TestEffectiveLayoutInvalid(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\nlayout: invalid\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.EffectiveLayout(); got != LayoutSplit {
+		t.Errorf("expected %q for invalid layout, got %q", LayoutSplit, got)
+	}
+}
+
+func TestEffectiveLayoutNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.EffectiveLayout(); got != LayoutSplit {
+		t.Errorf("expected %q for nil config, got %q", LayoutSplit, got)
+	}
+}
+
+func TestSummaryEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		expected bool
+	}{
+		{"default (no summary)", "dirs:\n  - /tmp\n", false},
+		{"summary false", "dirs:\n  - /tmp\nsummary: false\n", false},
+		{"summary true split layout", "dirs:\n  - /tmp\nsummary: true\n", false},
+		{"summary true tab layout", "dirs:\n  - /tmp\nlayout: tab\nsummary: true\n", true},
+		{"summary false tab layout", "dirs:\n  - /tmp\nlayout: tab\nsummary: false\n", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfgPath := filepath.Join(tmp, "config.yaml")
+			if err := os.WriteFile(cfgPath, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFrom(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.SummaryEnabled(); got != tt.expected {
+				t.Errorf("SummaryEnabled() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEffectiveTmpDirDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.EffectiveTmpDir(); got != "" {
+		t.Errorf("expected empty string for default tmpdir, got %q", got)
+	}
+}
+
+func TestEffectiveTmpDirCustom(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\ntmpdir: /custom/workspaces\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.EffectiveTmpDir(); got != "/custom/workspaces" {
+		t.Errorf("expected /custom/workspaces, got %q", got)
+	}
+}
+
+func TestEffectiveTmpDirTilde(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte("dirs:\n  - /tmp/repos\ntmpdir: ~/.config/csl/workspaces\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, _ := os.UserHomeDir()
+	expected := filepath.Join(home, ".config/csl/workspaces")
+	if got := cfg.EffectiveTmpDir(); got != expected {
+		t.Errorf("expected %s, got %s", expected, got)
+	}
+}
+
+func TestEffectiveTmpDirNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.EffectiveTmpDir(); got != "" {
+		t.Errorf("expected empty string for nil config, got %q", got)
+	}
+}
+
+func TestSummaryEnabledNilConfig(t *testing.T) {
+	var cfg *Config
+	if cfg.SummaryEnabled() {
+		t.Error("expected SummaryEnabled() = false for nil config")
+	}
+}
+
+func TestLoadFromGlobalConfig(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Set HOME to tmp so Load() looks in tmp/.config/csl/
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmp)
+	defer os.Setenv("HOME", origHome)
+
+	cfgDir := filepath.Join(tmp, ".config", "csl")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgPath := filepath.Join(cfgDir, "config.yaml")
+
+	content := []byte("dirs:\n  - /global/repos\n")
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Dirs[0] != "/global/repos" {
+		t.Errorf("expected /global/repos from global config, got %s", cfg.Dirs[0])
+	}
+}
