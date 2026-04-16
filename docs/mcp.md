@@ -15,7 +15,9 @@ There is no long-running server. The MCP client spawns `csl mcp` as a subprocess
 
 - `csl mcp` is a thin adapter over the internal Go packages that already back the cobra commands (`internal/search`, `internal/daemon`, `internal/repo/finder`, `internal/repo/config`).
 - `csl_search` and `csl_count` follow the same daemon-first-then-fallback pattern as the CLI: they call `daemon.EnsureDaemon`, then `daemon.SearchVia` / `daemon.CountVia`, and fall back to in-process search if the daemon is unreachable. The daemon keeps zoekt shards mmap'd across calls, so each tool invocation is fast after the first.
-- `csl_repo_lookup` and `csl_read` hit the filesystem directly via `finder.Walk` and do not talk to the daemon.
+- `csl_repo_lookup`, `csl_repo_info`, and `csl_read` hit the filesystem directly via `finder.Walk` and do not talk to the daemon. `csl_repo_info` additionally reads the zoekt index state to compute staleness.
+- `csl_repo_pull` shells out to `git pull --ff-only` in the resolved repo path with dirty-tree and detached-HEAD safety checks.
+- `csl_repo_reindex` writes new shards to the zoekt index directory directly (`search.IndexRepo`); the running daemon re-mmap's the updated shards on the next query.
 
 ## Registration
 
@@ -66,6 +68,139 @@ Resolve a git repo name to its absolute local checkout path.
 
 Empty `matches` means the repo is not checked out locally. Claude is instructed to report that to the user rather than guess a path.
 
+### `csl_repo_info`
+
+Report git state and zoekt index state for a repo, plus a suggested next action.
+
+**When Claude uses it:** before creating a branch, running `git pull`, or making edits, to confirm the working tree is clean and the search index is fresh. Also used to decide whether `csl_repo_pull` or `csl_repo_reindex` should run first.
+
+**Input:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Case-insensitive regex or substring matched against the repo name |
+
+**Output:**
+
+| Field | Type | Description |
+|---|---|---|
+| `matches` | array | Matching repos, each with git + index state |
+| `matches[].name` | string | `org/repo` name |
+| `matches[].path` | string | Absolute filesystem path |
+| `matches[].branch` | string | Current git branch (or `HEAD` if detached) |
+| `matches[].dirty` | bool | Whether the working tree has uncommitted changes |
+| `matches[].modified_files` | int | Count of modified tracked files |
+| `matches[].untracked_files` | int | Count of untracked files |
+| `matches[].index_stale` | bool | Whether the zoekt index is behind the current fingerprint |
+| `matches[].indexed_at` | string | RFC3339 timestamp or the literal string `never` |
+| `matches[].action` | string | One of `ready`, `commit_or_stash`, `pull_recommended`, `needs_reindex` |
+
+**Example:**
+
+```json
+{
+  "matches": [{
+    "name": "mad01/code-search-local",
+    "path": "/Users/alex/code/src/github.com/mad01/code-search-local",
+    "branch": "main",
+    "dirty": false,
+    "modified_files": 0,
+    "untracked_files": 0,
+    "index_stale": false,
+    "indexed_at": "2026-04-16T12:03:44Z",
+    "action": "ready"
+  }]
+}
+```
+
+The `action` field is how Claude decides what to do next: `commit_or_stash` dirty trees, `needs_reindex` when the index is behind, `pull_recommended` when the last index is older than 30 minutes (likely behind remote), and `ready` otherwise.
+
+### `csl_repo_pull`
+
+Run `git pull --ff-only` in a named repo with safety checks.
+
+**When Claude uses it:** before creating a branch on a repo that may be behind. Refuses by default if the working tree is dirty or HEAD is detached; set `force: true` to override.
+
+**Input:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Case-insensitive substring match against the repo name |
+| `force` | bool | no | Pull even if uncommitted changes exist |
+
+**Output:**
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | `org/repo` name |
+| `path` | string | Absolute filesystem path |
+| `branch` | string | Current branch |
+| `updated` | bool | `true` if HEAD moved after the pull |
+| `warning` | string | Set when the safety check blocked the pull (dirty tree, detached HEAD) |
+| `old_head` | string | HEAD before the pull |
+| `new_head` | string | HEAD after the pull |
+
+**Example (successful fast-forward):**
+
+```json
+{
+  "name": "mad01/code-search-local",
+  "path": "/Users/alex/code/src/github.com/mad01/code-search-local",
+  "branch": "main",
+  "updated": true,
+  "old_head": "a1b2c3d",
+  "new_head": "e4f5g6h"
+}
+```
+
+**Example (blocked by dirty tree):**
+
+```json
+{
+  "name": "mad01/code-search-local",
+  "path": "/Users/alex/code/src/github.com/mad01/code-search-local",
+  "branch": "main",
+  "updated": false,
+  "warning": "uncommitted changes (2 modified, 1 untracked) — use force=true to pull anyway"
+}
+```
+
+The pull uses `--ff-only`, so no merge commits are created. If a real merge would be needed, the underlying git command fails and the error is surfaced to Claude.
+
+### `csl_repo_reindex`
+
+Rebuild the zoekt index for a single repo.
+
+**When Claude uses it:** after a significant edit, merge, or checkout, when `csl_repo_info` reports `action: needs_reindex`, or when fresh search results are needed before the background re-indexer would catch up.
+
+**Input:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Case-insensitive substring match against the repo name |
+
+**Output:**
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | `org/repo` name |
+| `path` | string | Absolute filesystem path |
+| `reindexed` | bool | `true` if indexing succeeded |
+| `duration` | string | Human-readable indexing duration (e.g. `1.234s`) |
+
+**Example:**
+
+```json
+{
+  "name": "mad01/code-search-local",
+  "path": "/Users/alex/code/src/github.com/mad01/code-search-local",
+  "reindexed": true,
+  "duration": "1.234s"
+}
+```
+
+This touches only the named repo's shards; other repos in the index are untouched.
+
 ### `csl_search`
 
 Search code across locally checked-out repos using zoekt query syntax.
@@ -91,7 +226,7 @@ Search code across locally checked-out repos using zoekt query syntax.
 {
   "output_mode": "files_with_matches",
   "files": [
-    {"repo": "mad01/kitty-session", "path": "internal/mcpserver/server.go"}
+    {"repo": "mad01/code-search-local", "path": "internal/mcpserver/server.go"}
   ],
   "total": 1
 }
@@ -104,7 +239,7 @@ Search code across locally checked-out repos using zoekt query syntax.
   "output_mode": "content",
   "lines": [
     {
-      "repo": "mad01/kitty-session",
+      "repo": "mad01/code-search-local",
       "path": "internal/mcpserver/server.go",
       "line": 12,
       "column": 6,
@@ -154,7 +289,7 @@ Count matches of a zoekt query across repos, optionally grouped by repo or langu
 {
   "total": 142,
   "groups": [
-    {"group": "mad01/kitty-session", "count": 87},
+    {"group": "mad01/code-search-local", "count": 87},
     {"group": "mad01/dropbrain-studio", "count": 55}
   ]
 }
@@ -181,7 +316,7 @@ Read a file from a named local repo by repo name and relative path.
 
 ```json
 {
-  "repo": "mad01/kitty-session",
+  "repo": "mad01/code-search-local",
   "path": "internal/mcpserver/server.go",
   "lines": [
     {"number": 12, "text": "func New(version string) *mcp.Server {"}
@@ -228,7 +363,7 @@ To verify `csl mcp` speaks JSON-RPC correctly without involving Claude Code:
 ( printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'; sleep 1 ) | csl mcp
 ```
 
-Expected: one `initialize` response followed by a `tools/list` response listing the five `csl_*` tools with their input and output schemas. The `sleep 1` keeps stdin open long enough for the server to flush responses before exit.
+Expected: one `initialize` response followed by a `tools/list` response listing the eight `csl_*` tools with their input and output schemas. The `sleep 1` keeps stdin open long enough for the server to flush responses before exit.
 
 ## Troubleshooting
 

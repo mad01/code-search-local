@@ -23,6 +23,9 @@ IPC spawned per session by the MCP client.
 
 Tools exposed:
   csl_repo_lookup      Resolve a repo name to its local checkout path
+  csl_repo_info        Report git health and index staleness for a repo
+  csl_repo_pull        Fast-forward git pull with safety checks
+  csl_repo_reindex     Rebuild the zoekt index for a single repo
   csl_search           Search code across locally checked-out repos
   csl_count            Count matches grouped by repo or language
   csl_read             Read a file from a named local repo

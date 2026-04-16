@@ -30,9 +30,9 @@ The --repo flag is required to resolve which repository the file belongs to.
 The file path is relative to the repository root.
 
 Examples:
-  csl read internal/cli/root.go --repo kitty-session
-  csl read main.go --repo kitty-session --start-line 10 --end-line 30
-  csl read README.md --repo kitty-session --json`,
+  csl read internal/cli/root.go --repo code-search-local
+  csl read main.go --repo code-search-local --start-line 10 --end-line 30
+  csl read README.md --repo code-search-local --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runReadfile,
 }

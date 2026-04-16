@@ -30,7 +30,7 @@ Examples:
   csl count "TODO"
   csl count "func.*Error" --group-by repo
   csl count "import" --lang go --group-by language
-  csl count "FIXME" --repo kitty-session --json`,
+  csl count "FIXME" --repo code-search-local --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCount,
 }

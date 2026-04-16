@@ -50,7 +50,7 @@ Query syntax:
 
 Examples:
   csl search "func Walk"
-  csl search "TODO|FIXME" --repo kitty-session
+  csl search "TODO|FIXME" --repo code-search-local
   csl search "fmt\.Errorf" --lang go --output-mode content -C 3
   csl search "import.*cobra" --file "\.go$" --limit 10
   csl search --reindex "NewBuilder"
