@@ -59,6 +59,34 @@ claude mcp list   # expect: csl: csl mcp - ✓ Connected
 
 The MCP server exposes eight tools: search, count, query validation, repo lookup/info/pull/reindex, and file read. See [docs/mcp.md](docs/mcp.md) for the per-tool reference.
 
+## Add this to your CLAUDE.md
+
+Registering the MCP server makes the tools available, but Claude will still reach for `find`, `ls`, `Glob`, or raw `grep` by default. Paste the snippet below into `~/.claude/CLAUDE.md` (user-level) or a project `CLAUDE.md` so Claude prefers `csl_*` tools for local repo work:
+
+```markdown
+## Local Code Search (csl)
+
+Always use the `csl_*` MCP tools for repo discovery, code search, and file reads across local checkouts. Do not use the `csl` CLI directly — the MCP tools and CLI share the same foundation, so if one is down the other will be too.
+
+Available tools:
+- **Repo:** `csl_repo_lookup`, `csl_repo_info`, `csl_repo_pull`, `csl_repo_reindex`
+- **Search:** `csl_search`, `csl_count`, `csl_read`, `csl_query_validate`
+
+### Repo discovery
+- Use `csl_repo_lookup` or `csl_repo_info` to find repos. Do not use `find`, `ls`, `Glob`, or shell to manually search for repo directories.
+- `csl_repo_info` returns git health (branch, dirty files, index staleness, suggested action). Call it before starting work on a repo to decide whether to commit, stash, pull, or reindex.
+- `csl_repo_lookup` returns `remote` and `host` fields — use them to branch behavior per git host when needed.
+- If lookup returns empty, the repo is not checked out locally — say so, don't guess paths.
+- Use `csl_repo_pull` before creating branches on repos that may be behind (it has safety checks for dirty state).
+- Use `csl_repo_reindex` after significant changes so `csl_search` results stay current.
+
+### Query syntax
+For zoekt query syntax help, call `csl_query_validate` — it returns the parsed tree or a parse error with a hint.
+
+### Multi-repo awareness
+When switching working directory to a different git repo, read that repo's `CLAUDE.md` (and `.claude/CLAUDE.md` if present) before making changes. Per-repo instructions take precedence over this global file for repo-specific concerns (build commands, conventions, test frameworks).
+```
+
 ## Docs
 
 - [Getting started](docs/getting-started.md) — install, configure, first search.
