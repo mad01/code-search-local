@@ -59,6 +59,8 @@ claude mcp list   # expect: csl: csl mcp - ✓ Connected
 
 The MCP server exposes eight tools: search, count, query validation, repo lookup/info/pull/reindex, and file read. See [docs/mcp.md](docs/mcp.md) for the per-tool reference.
 
+To skip the per-call permission prompt, add `"mcp__csl__*"` to `permissions.allow` in `~/.claude/settings.json`.
+
 ## Add this to your CLAUDE.md
 
 Registering the MCP server makes the tools available, but Claude will still reach for `find`, `ls`, `Glob`, or raw `grep` by default. Paste the snippet below into `~/.claude/CLAUDE.md` (user-level) or a project `CLAUDE.md` so Claude prefers `csl_*` tools for local repo work:
