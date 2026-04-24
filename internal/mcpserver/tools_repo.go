@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 
@@ -72,13 +71,9 @@ func handleRepoLookup(
 	_ *mcp.CallToolRequest,
 	in repoLookupInput,
 ) (*mcp.CallToolResult, repoLookupOutput, error) {
-	if in.Name == "" {
-		return nil, repoLookupOutput{}, fmt.Errorf("name is required")
-	}
-
-	re, err := regexp.Compile("(?i)" + in.Name)
+	re, err := finder.CompileMatcher(in.Name)
 	if err != nil {
-		return nil, repoLookupOutput{}, fmt.Errorf("invalid name pattern %q: %w", in.Name, err)
+		return nil, repoLookupOutput{}, err
 	}
 
 	cfg, err := config.Load()
@@ -130,13 +125,9 @@ func handleRepoInfo(
 	_ *mcp.CallToolRequest,
 	in repoInfoInput,
 ) (*mcp.CallToolResult, repoInfoOutput, error) {
-	if in.Name == "" {
-		return nil, repoInfoOutput{}, fmt.Errorf("name is required")
-	}
-
-	re, err := regexp.Compile("(?i)" + in.Name)
+	re, err := finder.CompileMatcher(in.Name)
 	if err != nil {
-		return nil, repoInfoOutput{}, fmt.Errorf("invalid name pattern %q: %w", in.Name, err)
+		return nil, repoInfoOutput{}, err
 	}
 
 	cfg, err := config.Load()
@@ -355,10 +346,11 @@ func handleRepoReindex(
 
 // resolveRepo finds a single repo by name. Returns an error if no match or ambiguous.
 func resolveRepo(name string) (finder.Repo, error) {
-	re, err := regexp.Compile("(?i)" + name)
+	re, err := finder.CompileMatcher(name)
 	if err != nil {
-		return finder.Repo{}, fmt.Errorf("invalid name pattern %q: %w", name, err)
+		return finder.Repo{}, err
 	}
+	normalized := finder.NormalizeQuery(name)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -378,12 +370,12 @@ func resolveRepo(name string) (finder.Repo, error) {
 	}
 
 	if len(matches) == 0 {
-		return finder.Repo{}, fmt.Errorf("no repo matching %q found locally", name)
+		return finder.Repo{}, fmt.Errorf("no repo matching %q found locally", normalized)
 	}
 	if len(matches) > 1 {
 		// Try exact match first
 		for _, m := range matches {
-			if strings.EqualFold(m.Name, name) {
+			if strings.EqualFold(m.Name, normalized) {
 				return m, nil
 			}
 		}
@@ -391,7 +383,7 @@ func resolveRepo(name string) (finder.Repo, error) {
 		for i, m := range matches {
 			names[i] = m.Name
 		}
-		return finder.Repo{}, fmt.Errorf("ambiguous: %d repos match %q: %s — be more specific", len(matches), name, strings.Join(names, ", "))
+		return finder.Repo{}, fmt.Errorf("ambiguous: %d repos match %q: %s — be more specific", len(matches), normalized, strings.Join(names, ", "))
 	}
 
 	return matches[0], nil
