@@ -105,6 +105,28 @@ func Walk(dirs []string) ([]Repo, error) {
 	return repos, nil
 }
 
+// Inspect resolves a single repo by its absolute working-tree path.
+// Returns an error if the path is not a directory or has no .git entry.
+// Use this instead of Walk when you already know the repo path (e.g. from a git hook).
+func Inspect(path string) (Repo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return Repo{}, err
+	}
+	if !info.IsDir() {
+		return Repo{}, &os.PathError{Op: "inspect", Path: path, Err: os.ErrInvalid}
+	}
+	gitInfo, err := os.Stat(filepath.Join(path, ".git"))
+	if err != nil || (!gitInfo.IsDir() && !gitInfo.Mode().IsRegular()) {
+		return Repo{}, &os.PathError{Op: "inspect", Path: path, Err: os.ErrNotExist}
+	}
+	name, remote, host := repoInfo(path)
+	if name == "" {
+		return Repo{}, &os.PathError{Op: "inspect", Path: path, Err: os.ErrInvalid}
+	}
+	return Repo{Name: name, Path: path, Remote: remote, Host: host}, nil
+}
+
 // repoInfo reads the origin remote URL from .git/config and returns
 // the parsed name (org/repo), the raw remote URL, and the extracted hostname.
 func repoInfo(dir string) (name, remote, host string) {

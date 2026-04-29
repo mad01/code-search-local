@@ -171,6 +171,47 @@ func TestReadOriginURL(t *testing.T) {
 	}
 }
 
+func TestInspect(t *testing.T) {
+	tmp := t.TempDir()
+	repoDir := filepath.Join(tmp, "myorg", "myrepo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, repoDir)
+	gitSetRemote(t, repoDir, "git@github.com:testorg/myrepo.git")
+
+	got, err := Inspect(repoDir)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.Name != "testorg/myrepo" {
+		t.Errorf("Name = %q, want testorg/myrepo", got.Name)
+	}
+	if got.Path != repoDir {
+		t.Errorf("Path = %q, want %q", got.Path, repoDir)
+	}
+	if got.Host != "github.com" {
+		t.Errorf("Host = %q, want github.com", got.Host)
+	}
+}
+
+func TestInspectNotARepo(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "not-a-repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(dir); err == nil {
+		t.Error("expected error for non-repo directory")
+	}
+}
+
+func TestInspectMissingPath(t *testing.T) {
+	if _, err := Inspect("/nonexistent/path"); err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
 func TestReadOriginURLMissingFile(t *testing.T) {
 	got := readOriginURL("/nonexistent/config")
 	if got != "" {

@@ -20,6 +20,7 @@ var (
 	indexCleanFlag  bool
 	indexRepairFlag bool
 	indexJSONFlag   bool
+	indexRepoFlag   string
 )
 
 var indexCmd = &cobra.Command{
@@ -41,6 +42,7 @@ func init() {
 	indexCmd.Flags().BoolVar(&indexCleanFlag, "clean", false, "delete the index directory")
 	indexCmd.Flags().BoolVar(&indexRepairFlag, "repair", false, "validate shards and remove corrupted ones")
 	indexCmd.Flags().BoolVar(&indexJSONFlag, "json", false, "output as JSON")
+	indexCmd.Flags().StringVar(&indexRepoFlag, "repo", "", "re-index a single repo by absolute path (skips global staleness check)")
 	rootCmd.AddCommand(indexCmd)
 }
 
@@ -71,6 +73,10 @@ func runIndex(cmd *cobra.Command, args []string) error {
 
 	if indexRepairFlag {
 		return runRepair(cmd, indexDir)
+	}
+
+	if indexRepoFlag != "" {
+		return runIndexSingle(cmd, indexDir, indexRepoFlag)
 	}
 
 	cfg, err := config.Load()
@@ -191,6 +197,45 @@ func printIndexStatus(cmd *cobra.Command, repos []finder.Repo, state *search.Ind
 		}
 		fmt.Fprintf(w, "%-40s %-10s %-8s %-20s %s\n", r.Name, status, dirty, indexed, rs.Branch)
 	}
+	return nil
+}
+
+// runIndexSingle re-indexes one repo by absolute path. Used by the post-merge
+// git hook: cheap, no global scan, fingerprint state still updated so the next
+// `csl index` won't redundantly re-process this repo.
+func runIndexSingle(cmd *cobra.Command, indexDir, repoPath string) error {
+	abs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve repo path %s: %w", repoPath, err)
+	}
+
+	repo, err := finder.Inspect(abs)
+	if err != nil {
+		return fmt.Errorf("inspect repo %s: %w", abs, err)
+	}
+
+	state, err := search.LoadState(indexDir)
+	if err != nil {
+		return err
+	}
+
+	w := cmd.ErrOrStderr()
+	fmt.Fprintf(w, "Indexing %s\n", repo.Name)
+
+	if err := search.IndexRepos(indexDir, []finder.Repo{repo}, nil); err != nil {
+		return fmt.Errorf("indexing failed: %w", err)
+	}
+
+	fp, fpErr := search.Fingerprint(repo.Path)
+	if fpErr == nil {
+		fp.IndexedAt = time.Now()
+		state.SetRepo(repo.Path, fp)
+		if err := state.Save(indexDir); err != nil {
+			return fmt.Errorf("failed to save index state: %w", err)
+		}
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "indexed %s\n", repo.Name)
 	return nil
 }
 

@@ -242,6 +242,68 @@ func TestSummaryEnabledNilConfig(t *testing.T) {
 	}
 }
 
+func TestPostMergeHookExclude(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	content := []byte(`dirs:
+  - /tmp/repos
+hooks:
+  post_merge:
+    enabled: true
+    exclude:
+      - /Users/me/workspace/services-pilot
+      - org/big-monorepo
+      - ~/code/skip-this
+`)
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Hooks.PostMerge.Enabled {
+		t.Fatal("expected enabled=true")
+	}
+
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		path, name string
+		want       bool
+	}{
+		{"/Users/me/workspace/services-pilot", "me/services-pilot", true},
+		{"/anywhere", "org/big-monorepo", true},
+		{filepath.Join(home, "code/skip-this"), "me/skip-this", true},
+		{"/Users/me/workspace/other", "me/other", false},
+	}
+	for _, c := range cases {
+		if got := cfg.Hooks.PostMerge.IsExcluded(c.path, c.name); got != c.want {
+			t.Errorf("IsExcluded(%q, %q) = %v, want %v", c.path, c.name, got, c.want)
+		}
+	}
+}
+
+func TestPostMergeHookDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("dirs:\n  - /tmp/repos\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hooks.PostMerge.Enabled {
+		t.Error("expected enabled=false when hooks block is omitted")
+	}
+	if cfg.Hooks.PostMerge.IsExcluded("/x", "x/y") {
+		t.Error("expected no exclusion when list is empty")
+	}
+}
+
 func TestLoadFromGlobalConfig(t *testing.T) {
 	tmp := t.TempDir()
 

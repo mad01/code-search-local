@@ -19,10 +19,41 @@ const (
 
 // Config holds the repo finder configuration.
 type Config struct {
-	Dirs    []string `yaml:"dirs"`
-	Layout  string   `yaml:"layout"`
-	Summary bool     `yaml:"summary"`
-	TmpDir  string   `yaml:"tmpdir"`
+	Dirs    []string    `yaml:"dirs"`
+	Layout  string      `yaml:"layout"`
+	Summary bool        `yaml:"summary"`
+	TmpDir  string      `yaml:"tmpdir"`
+	Hooks   HooksConfig `yaml:"hooks"`
+}
+
+// HooksConfig holds configuration for git hooks managed by csl.
+type HooksConfig struct {
+	PostMerge PostMergeHook `yaml:"post_merge"`
+}
+
+// PostMergeHook configures the post-merge hook installer.
+// When enabled, `csl hooks install` writes .git/hooks/post-merge into every
+// repo discovered via Dirs, except those listed in Exclude.
+// Exclude entries are matched against both the repo's absolute path and its
+// org/repo name (exact match, no globs).
+type PostMergeHook struct {
+	Enabled bool     `yaml:"enabled"`
+	Exclude []string `yaml:"exclude"`
+}
+
+// IsExcluded reports whether the given repo (by absolute path or org/repo name)
+// should be skipped by the hook installer.
+func (h *PostMergeHook) IsExcluded(repoPath, repoName string) bool {
+	if h == nil {
+		return false
+	}
+	for _, e := range h.Exclude {
+		e = expandTilde(e)
+		if e == repoPath || e == repoName {
+			return true
+		}
+	}
+	return false
 }
 
 // SummaryEnabled returns true when the summary tab should be created.
@@ -84,6 +115,9 @@ func loadFrom(path string) (*Config, error) {
 		cfg.Dirs[i] = expandTilde(d)
 	}
 	cfg.TmpDir = expandTilde(cfg.TmpDir)
+	for i, e := range cfg.Hooks.PostMerge.Exclude {
+		cfg.Hooks.PostMerge.Exclude[i] = expandTilde(e)
+	}
 
 	return &cfg, nil
 }
