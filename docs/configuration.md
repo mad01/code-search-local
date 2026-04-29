@@ -13,6 +13,8 @@ Loaded by the CLI and the MCP server on every invocation that needs to discover 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `dirs` | list of strings | yes | Root directories that contain your git checkouts. `csl` walks each recursively and records any directory whose child is `.git`. Tildes are expanded. Missing paths are skipped. |
+| `hooks.post_merge.enabled` | bool | no (default `false`) | Master switch for the `csl hooks install` post-merge hook installer. See [hooks reference](hooks.md). |
+| `hooks.post_merge.exclude` | list of strings | no (default `[]`) | Repos to skip when installing hooks. Each entry matches against the repo's absolute path or its `org/repo` name. Tildes are expanded. |
 
 Example:
 
@@ -21,6 +23,13 @@ dirs:
   - ~/code/src/github.com
   - ~/code/src/github.com/myorg
   - ~/workspace
+
+hooks:
+  post_merge:
+    enabled: true
+    exclude:
+      - ~/workspace/services-pilot
+      - myorg/big-monorepo
 ```
 
 ### Discovery rules

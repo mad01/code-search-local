@@ -13,6 +13,7 @@ Every command that reads repos loads `~/.config/csl/config.yaml` and walks the c
 | [`csl read`](#csl-read) | Read a file from a named repo by relative path |
 | [`csl repo`](#csl-repo) | List or interactively pick a repo |
 | [`csl index`](#csl-index) | Manage the zoekt index (status, repair, clean) |
+| [`csl hooks`](#csl-hooks) | Install a `post-merge` git hook to auto-reindex on `git pull` |
 | [`csl doctor`](#csl-doctor) | Report index and daemon health |
 | [`csl query`](#csl-query) | Validate a zoekt query without running it |
 | [`csl mcp`](#csl-mcp) | Start the MCP stdio server (for Claude Code) |
@@ -233,6 +234,7 @@ Manage the zoekt index.
 ```sh
 csl index                   # re-index stale repos only
 csl index --all             # force re-index of every repo
+csl index --repo <path>     # re-index a single repo by absolute path
 csl index --status          # report per-repo freshness
 csl index --repair          # validate and drop corrupted shards
 csl index --clean           # delete the entire index directory
@@ -249,6 +251,7 @@ By default, `csl index` diffs the current repo fingerprints against `state.json`
 | Flag | Default | Description |
 |---|---|---|
 | `--all` | `false` | Re-index every repo, regardless of fingerprint |
+| `--repo <path>` | `""` | Re-index a single repo by absolute path. Skips the global staleness check; updates that repo's `state.json` entry. Used by the `post-merge` git hook |
 | `--status` | `false` | Print a status table instead of indexing |
 | `--clean` | `false` | Remove `~/.config/csl/search-index/` entirely |
 | `--repair` | `false` | Validate shards, remove corrupted ones |
@@ -282,6 +285,35 @@ csl index --all
 csl index --repair
 csl index
 ```
+
+**Reindex a single repo (what the post-merge hook calls):**
+
+```sh
+csl index --repo ~/code/src/github.com/myorg/foo
+```
+
+---
+
+## `csl hooks`
+
+Install a `post-merge` git hook into every discovered repo so the index refreshes automatically after `git pull`.
+
+### Synopsis
+
+```sh
+csl hooks install               # write/update the hook in every non-excluded repo
+csl hooks install --dry-run     # preview without writing
+csl hooks uninstall             # remove csl-managed hooks
+csl hooks status                # report per-repo hook state
+```
+
+### Description
+
+Off by default. Enable via `hooks.post_merge.enabled: true` in `~/.config/csl/config.yaml`, then run `csl hooks install`. The installer writes the same hook script into every repo discovered through `dirs`, applying `hooks.post_merge.exclude`. Re-running is idempotent — identical files are skipped — so it is safe to wire into `ralph apply`.
+
+The hook calls `csl index --repo <path>` in the background after each pull, keeping the search index in sync without blocking the pull.
+
+See [hooks reference](hooks.md) for the config schema, exclusion semantics, the hook script itself, and the full subcommand reference.
 
 ---
 

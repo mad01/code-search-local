@@ -45,6 +45,7 @@ csl search "func Walk"              # search all indexed repos
 csl search "TODO" --repo myrepo     # filter to one repo
 csl search "fmt\.Errorf" --lang go --output-mode content -C 3
 csl count "TODO" --group-by repo    # cross-repo tally
+csl hooks install                   # auto-reindex on `git pull` (opt-in)
 csl doctor                          # check index + daemon health
 ```
 
@@ -94,6 +95,7 @@ When switching working directory to a different git repo, read that repo's `CLAU
 - [Getting started](docs/getting-started.md) — install, configure, first search.
 - [Configuration](docs/configuration.md) — config file, paths, environment.
 - [CLI reference](docs/cli.md) — every subcommand and flag.
+- [Hooks](docs/hooks.md) — auto-reindex on `git pull` via `csl hooks install`.
 - [MCP server reference](docs/mcp.md) — `csl mcp` tool reference for Claude Code.
 - [Architecture](docs/architecture.md) — how the daemon, index, and MCP adapter fit together.
 
